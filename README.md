@@ -33,5 +33,11 @@ The tool also includes additional functions:
 - average_normals(): For smooth shading
 
 You can also add this script to your shelf or create a custom button for quick access.
+
+Maya 2026.....
+Open and Copy the content inside "CMD" file . paste the Full code into the python CMD prompt area and press Execute all button.
+After the execution choose file menu and click save script to shelf .
+
+Thanks. Enjoy, stay creative.......
 """
 
