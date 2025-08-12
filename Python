@@ -1,0 +1,295 @@
+import maya.cmds as cmds
+import maya.mel as mel
+
+def flip_normals_to_outside():
+    """
+    Flips only the normals of faces that are actually inverted (inside-out).
+    Uses Maya commands for reliable face analysis.
+    """
+    
+    # Get selected objects
+    selected = cmds.ls(selection=True, type='transform')
+    
+    if not selected:
+        cmds.warning("Please select at least one mesh object.")
+        return
+    
+    processed_meshes = []
+    total_flipped_faces = 0
+    
+    for obj in selected:
+        # Get shape node
+        shapes = cmds.listRelatives(obj, shapes=True, type='mesh')
+        
+        if not shapes:
+            cmds.warning(f"{obj} is not a mesh object. Skipping...")
+            continue
+        
+        mesh_shape = shapes[0]
+        
+        try:
+            # Get face count
+            face_count = cmds.polyEvaluate(obj, face=True)
+            inverted_faces = []
+            
+            # Get object bounding box center as reference
+            bbox = cmds.exactWorldBoundingBox(obj)
+            obj_center_x = (bbox[0] + bbox[3]) / 2
+            obj_center_y = (bbox[1] + bbox[4]) / 2
+            obj_center_z = (bbox[2] + bbox[5]) / 2
+            
+            print(f"Analyzing {face_count} faces in {obj}...")
+            
+            # Check each face
+            for face_id in range(face_count):
+                try:
+                    face_name = f"{obj}.f[{face_id}]"
+                    
+                    # Get face normal using polyInfo
+                    face_normal_info = cmds.polyInfo(face_name, faceNormals=True)
+                    if not face_normal_info:
+                        continue
+                        
+                    # Parse normal from string like "FACE_NORMAL      0: 0.000000 1.000000 0.000000"
+                    normal_line = face_normal_info[0].strip()
+                    parts = normal_line.split()
+                    if len(parts) < 5:
+                        continue
+                    
+                    try:
+                        nx = float(parts[-3])
+                        ny = float(parts[-2]) 
+                        nz = float(parts[-1])
+                    except (ValueError, IndexError):
+                        continue
+                    
+                    # Get face center using bounding box
+                    face_bbox = cmds.exactWorldBoundingBox(face_name)
+                    face_center_x = (face_bbox[0] + face_bbox[3]) / 2
+                    face_center_y = (face_bbox[1] + face_bbox[4]) / 2
+                    face_center_z = (face_bbox[2] + face_bbox[5]) / 2
+                    
+                    # Vector from object center to face center
+                    to_face_x = face_center_x - obj_center_x
+                    to_face_y = face_center_y - obj_center_y
+                    to_face_z = face_center_z - obj_center_z
+                    
+                    # Normalize
+                    length = (to_face_x**2 + to_face_y**2 + to_face_z**2)**0.5
+                    if length < 0.001:  # Face is at object center
+                        continue
+                        
+                    to_face_x /= length
+                    to_face_y /= length
+                    to_face_z /= length
+                    
+                    # Dot product between normal and direction to face center
+                    dot_product = nx*to_face_x + ny*to_face_y + nz*to_face_z
+                    
+                    # If dot product is negative, normal points inward (inverted)
+                    if dot_product < -0.15:  # More conservative threshold
+                        inverted_faces.append(face_id)
+                        print(f"  Face {face_id}: dot_product = {dot_product:.3f} (inverted)")
+                    else:
+                        print(f"  Face {face_id}: dot_product = {dot_product:.3f} (correct)")
+                        
+                except Exception as face_error:
+                    print(f"Error processing face {face_id}: {face_error}")
+                    continue
+            
+            # Flip only the inverted faces
+            if inverted_faces:
+                # Convert face indices to Maya selection format
+                face_components = [f"{obj}.f[{face_id}]" for face_id in inverted_faces]
+                
+                # Select the problematic faces
+                cmds.select(face_components)
+                
+                # Flip normals of selected faces only
+                cmds.polyNormal(normalMode=0, userNormalMode=0, ch=1)
+                
+                processed_meshes.append(obj)
+                total_flipped_faces += len(inverted_faces)
+                print(f"Fixed {len(inverted_faces)} inverted faces in: {obj}")
+            else:
+                print(f"No inverted faces found in: {obj}")
+            
+        except Exception as e:
+            cmds.warning(f"Failed to process {obj}: {str(e)}")
+            print(f"Full error: {e}")
+    
+    # Restore original selection
+    if processed_meshes:
+        cmds.select(processed_meshes)
+        cmds.confirmDialog(
+            title="Smart Normal Fix Complete",
+            message=f"Successfully fixed {total_flipped_faces} inverted faces across {len(processed_meshes)} mesh(es):\n" + 
+                   "\n".join(processed_meshes),
+            button=['OK']
+        )
+    else:
+        cmds.warning("No inverted faces were found in the selected objects.")
+
+def check_normal_direction():
+    """
+    Helper function to visualize normal directions.
+    Toggles the display of face normals in the viewport.
+    """
+    # Toggle face normal display
+    current_state = cmds.polyOptions(query=True, displayNormal=True)[0]
+    cmds.polyOptions(displayNormal=not current_state, facet=True, sizeNormal=0.5)
+    
+    if not current_state:
+        print("Face normals are now visible")
+    else:
+        print("Face normals are now hidden")
+
+def create_normal_flipper_ui():
+    """
+    Creates a simple UI for the normal flipper tool.
+    """
+    
+    # Delete existing window if it exists
+    if cmds.window('normalFlipperWindow', exists=True):
+        cmds.deleteUI('normalFlipperWindow')
+    
+    # Create the window
+    window = cmds.window('normalFlipperWindow', 
+                        title='Normal Flipper Tool', 
+                        widthHeight=(300, 150),
+                        resizeToFitChildren=True)
+    
+    # Create layout
+    cmds.columnLayout(adjustableColumn=True, columnOffset=('left', 10))
+    
+    cmds.text(label='Select mesh objects and click to flip normals', 
+              align='center', 
+              height=30)
+    
+    cmds.separator(height=10, style='in')
+    
+    cmds.button(label='Fix Only Inverted Faces (Smart)', 
+                command=lambda x: flip_normals_to_outside(),
+                height=40,
+                backgroundColor=[0.4, 0.6, 0.4])
+    
+    cmds.separator(height=10, style='none')
+    
+    cmds.button(label='Flip ALL Normals (Original)', 
+                command=lambda x: flip_all_normals(),
+                height=30,
+                backgroundColor=[0.6, 0.4, 0.4])
+    
+    cmds.separator(height=10, style='none')
+    
+    cmds.button(label='Toggle Normal Display', 
+                command=lambda x: check_normal_direction(),
+                height=30,
+                backgroundColor=[0.5, 0.5, 0.6])
+    
+    cmds.separator(height=10, style='none')
+    
+    cmds.text(label='Smart Fix: Only flips faces that are actually inverted', 
+              align='center',
+              font='smallPlainLabelFont')
+    
+    # Show the window
+    cmds.showWindow(window)
+
+# Main execution
+if __name__ == "__main__":
+    # You can run this in several ways:
+    
+    # 1. Create the UI
+    create_normal_flipper_ui()
+    
+    # 2. Or run directly on selected objects (uncomment below)
+    # flip_normals_to_outside()
+
+# Additional utility functions for advanced users:
+
+def flip_all_normals():
+    """
+    Original function: Flips ALL normals (for cases where you want to reverse everything).
+    """
+    
+    # Get selected objects
+    selected = cmds.ls(selection=True, type='transform')
+    
+    if not selected:
+        cmds.warning("Please select at least one mesh object.")
+        return
+    
+    processed_meshes = []
+    
+    for obj in selected:
+        # Get shape node
+        shapes = cmds.listRelatives(obj, shapes=True, type='mesh')
+        
+        if not shapes:
+            cmds.warning(f"{obj} is not a mesh object. Skipping...")
+            continue
+        
+        try:
+            # Select the current object
+            cmds.select(obj)
+            
+            # Reverse ALL normals
+            cmds.polyNormal(obj, normalMode=0, userNormalMode=0, ch=1)
+            
+            processed_meshes.append(obj)
+            print(f"Flipped ALL normals for: {obj}")
+            
+        except Exception as e:
+            cmds.warning(f"Failed to flip normals for {obj}: {str(e)}")
+    
+    # Restore original selection
+    if processed_meshes:
+        cmds.select(processed_meshes)
+        cmds.confirmDialog(
+            title="All Normals Flipped",
+            message=f"Successfully flipped ALL normals for {len(processed_meshes)} mesh(es):\n" + 
+                   "\n".join(processed_meshes),
+            button=['OK']
+        )
+    else:
+        cmds.warning("No mesh objects were processed.")
+    """
+    Alternative method: Conform normals to adjacent faces.
+    This is useful when you have mixed normal directions.
+    """
+    selected = cmds.ls(selection=True, type='transform')
+    
+    if not selected:
+        cmds.warning("Please select at least one mesh object.")
+        return
+    
+    for obj in selected:
+        shapes = cmds.listRelatives(obj, shapes=True, type='mesh')
+        if shapes:
+            try:
+                cmds.polyNormal(obj, normalMode=2, userNormalMode=0, ch=1)
+                print(f"Conformed normals for: {obj}")
+            except Exception as e:
+                cmds.warning(f"Failed to conform normals for {obj}: {str(e)}")
+
+def flip_normals_conform_to_adjacent():
+    """
+    Averages vertex normals for smoother shading.
+    """
+    selected = cmds.ls(selection=True, type='transform')
+    
+    if not selected:
+        cmds.warning("Please select at least one mesh object.")
+        return
+    
+    for obj in selected:
+        shapes = cmds.listRelatives(obj, shapes=True, type='mesh')
+        if shapes:
+            try:
+                cmds.polyNormal(obj, normalMode=2, userNormalMode=1, ch=1)
+                cmds.polySoftEdge(obj, angle=180, ch=1)
+                print(f"Averaged normals for: {obj}")
+            except Exception as e:
+                cmds.warning(f"Failed to average normals for {obj}: {str(e)}")
+
